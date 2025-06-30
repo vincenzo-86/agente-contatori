@@ -664,7 +664,7 @@ async function sendSMSToOperator(operatorPhone, message) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${process.env.GATEWAYAPI_TOKEN}`
+                'Authorization': `Bearer ${process.env.qsKnr3jISnKqJRSs_HawaUyEQjTpkhLYFVjbEzRc3swX4haONb_IZZkUx7hB3cF-}`
             },
             body: JSON.stringify({
                 sender: process.env.GATEWAYAPI_SENDER,
@@ -708,8 +708,8 @@ app.post('/api/reschedule-appointment', async (req, res) => {
         const appointment = appointmentResult.rows[0];
         
         // Verifica disponibilità
-        const availabilityQuery = `
-            SELECT COUNT(*) as count 
+      /*  const availabilityQuery = `
+            SELECT COUNT(*) as count
             FROM pianificazioni 
             WHERE data_appuntamento = $1 
             AND fascia_oraria = $2
@@ -727,7 +727,7 @@ app.post('/api/reschedule-appointment', async (req, res) => {
                     { date: new_date, time: '13:00-17:00' }
                 ]
             });
-        }
+        }*/
         
         // Aggiorna appuntamento
         const updateQuery = `
@@ -785,7 +785,7 @@ Motivo: ${reason || 'Richiesta cliente'}`;
         
         res.json({
             success: true,
-            message: `Perfetto! Ho spostato il suo appuntamento al ${newDateFormatted} nella fascia oraria ${new_time_slot}. Riceverà una nuova comunicazione con i dettagli aggiornati e il nostro operatore è stato notificato della modifica. Desidera altro?`
+            message: `Perfetto! Ho spostato il suo appuntamento al ${newDateFormatted} nella fascia oraria ${new_time_slot}. Al nostro operatore è stato notificato della modifica. Desidera altro?`
         });
         
     } catch (error) {
