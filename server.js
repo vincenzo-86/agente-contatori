@@ -101,7 +101,7 @@ async function sendSMSToOperator(operatorPhone, message) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${process.env.qsKnr3jISnKqJRSs_HawaUyEQjTpkhLYFVjbEzRc3swX4haONb_IZZkUx7hB3cF-`}
+                'Authorization': `Bearer ${process.env.qsKnr3jISnKqJRSs_HawaUyEQjTpkhLYFVjbEzRc3swX4haONb_IZZkUx7hB3cF-}`
             },
             body: JSON.stringify({
                 sender: process.env.GATEWAYAPI_SENDER,
