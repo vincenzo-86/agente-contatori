@@ -119,50 +119,6 @@ async function sendSMSToOperator(operatorPhone, message) {
     }
 }
 
-// Funzione per cercare telefono operatore tramite nome completo
-async function getOperatorPhone(operatorFullName) {
-    try {
-        if (!operatorFullName) return null;
-        
-        // Split "Nome Cognome" in parti separate
-        const nameParts = operatorFullName.trim().split(' ');
-        
-        if (nameParts.length < 2) {
-            console.log('⚠️ Formato operatore non valido:', operatorFullName);
-            return null;
-        }
-        
-        const nome = nameParts[0];
-        const cognome = nameParts.slice(1).join(' '); // Per gestire cognomi composti
-        
-        console.log(`🔍 Ricerca operatore: nome="${nome}", cognome="${cognome}"`);
-        
-        // Query per trovare l'operatore
-        const operatorQuery = `
-            SELECT telefono, nome, cognome
-            FROM operatori 
-            WHERE LOWER(nome) = LOWER($1) 
-            AND LOWER(cognome) = LOWER($2)
-            LIMIT 1
-        `;
-        
-        const result = await pool.query(operatorQuery, [nome, cognome]);
-        
-        if (result.rows.length > 0) {
-            const operator = result.rows[0];
-            console.log(`✅ Operatore trovato: ${operator.nome} ${operator.cognome}, tel: ${operator.telefono}`);
-            return operator.telefono;
-        } else {
-            console.log(`❌ Operatore non trovato: ${nome} ${cognome}`);
-            return null;
-        }
-        
-    } catch (error) {
-        console.error('❌ Errore ricerca operatore:', error);
-        return null;
-    }
-}
-
 // ===================================
 // API PER ELEVENLABS FUNCTIONS
 // ===================================
@@ -302,37 +258,17 @@ app.post('/api/reschedule-appointment', async (req, res) => {
         console.log('📅 Riprogrammazione appuntamento:', req.body);
         const { appointment_id, matricola, new_date, new_time_slot, reason } = req.body;
         
-        // Trova l'appuntamento e l'operatore
-        const appointmentQuery = `
-            SELECT p.*, o.nome, o.cognome, o.telefono as operatore_telefono
-            FROM pianificazioni p
-            LEFT JOIN operatori o ON p.operatore_id = o.id
-            WHERE p.id = $1 OR p.matricola = $2
-        `;
-        
-        const appointmentResult = await pool.query(appointmentQuery, [appointment_id, matricola]);
-        
-        if (appointmentResult.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                error: 'Appuntamento non trovato'
-            });
-        }
-        
-        const appointment = appointmentResult.rows[0];
-        
-        // Verifica disponibilità
+        // Verifica disponibilità (semplificata)
         const availabilityQuery = `
-            SELECT COUNT(*) as count
+            SELECT COUNT(*) as count 
             FROM pianificazioni 
             WHERE data_appuntamento = $1 
             AND fascia_oraria = $2
-            AND stato != 'cancellato'
         `;
         
         const availability = await pool.query(availabilityQuery, [new_date, new_time_slot]);
         
-        if (parseInt(availability.rows[0].count) >= 5) {
+        if (parseInt(availability.rows[0].count) >= 5) { // Max 5 appuntamenti per slot
             return res.json({
                 success: false,
                 error: 'La fascia oraria richiesta è già piena. Le propongo alternative disponibili.',
@@ -348,23 +284,14 @@ app.post('/api/reschedule-appointment', async (req, res) => {
             UPDATE pianificazioni 
             SET data_appuntamento = $1,
                 fascia_oraria = $2,
-                stato = 'riprogrammato',
-                note_riprogrammazione = $3,
-                data_modifica = CURRENT_TIMESTAMP
-            WHERE id = $4 OR matricola = $5
+                stato = 'riprogrammato'
+            WHERE id = $3 OR matricola = $4
             RETURNING *
         `;
         
-        await pool.query(`
-            ALTER TABLE pianificazioni 
-            ADD COLUMN IF NOT EXISTS note_riprogrammazione TEXT,
-            ADD COLUMN IF NOT EXISTS data_modifica TIMESTAMP
-        `).catch(() => {});
-        
         const result = await pool.query(updateQuery, [
-            new_date,
-            new_time_slot,
-            reason || 'Riprogrammato su richiesta cliente',
+            new_date, 
+            new_time_slot, 
             appointment_id,
             matricola
         ]);
@@ -376,30 +303,11 @@ app.post('/api/reschedule-appointment', async (req, res) => {
             });
         }
         
-        // Invia SMS all'operatore se ha il telefono
-        if (appointment.operatore_telefono) {
-            const newDateFormatted = new Date(new_date).toLocaleDateString('it-IT');
-            const smsMessage = `🔄 APPUNTAMENTO MODIFICATO
-Cliente: ${appointment.nome_utente}
-Indirizzo: ${appointment.indirizzo}, ${appointment.comune}
-Matricola: ${appointment.matricola}
-NUOVO APPUNTAMENTO: ${newDateFormatted} ore ${new_time_slot}
-Motivo: ${reason || 'Richiesta cliente'}`;
-
-            await sendSMSToOperator(appointment.operatore_telefono, smsMessage);
-        }
-        
-        // Log della modifica
-        await pool.query(`
-            INSERT INTO call_logs (matricola, action_taken, details, timestamp)
-            VALUES ($1, 'riprogrammazione', $2, CURRENT_TIMESTAMP)
-        `, [matricola, `Spostato a ${new_date} ${new_time_slot} - SMS inviato`]).catch(() => {});
-        
         const newDateFormatted = new Date(new_date).toLocaleDateString('it-IT');
         
         res.json({
             success: true,
-            message: `Perfetto! Ho spostato il suo appuntamento al ${newDateFormatted} nella fascia oraria ${new_time_slot}. Al nostro operatore è stato notificato della modifica. Desidera altro?`
+            message: `Perfetto! Ho spostato il suo appuntamento al ${newDateFormatted} nella fascia oraria ${new_time_slot}. L'appuntamento precedente è stato cancellato. Desidera altro?`
         });
         
     } catch (error) {
