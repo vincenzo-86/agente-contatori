@@ -455,28 +455,24 @@ app.post('/api/get-info', async (req, res) => {
 // NUOVA FUNZIONE: GET CURRENT DATE + VALIDATE DATES
 // ===================================
 
-// Funzione 5: Ottieni data corrente e valida disponibilità
+// Funzione 5: Ottieni data corrente (VERSIONE AGGIORNATA)
 app.post('/api/get-current-date', async (req, res) => {
     try {
         const today = new Date();
-        const todayString = today.toISOString().split('T')[0]; // YYYY-MM-DD
+        const todayString = today.toISOString().split('T')[0];
         const todayFormatted = today.toLocaleDateString('it-IT');
-        
-        // Calcola date disponibili (da domani in poi)
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
         
         const availableDates = [];
         
-        // Genera prossimi 30 giorni disponibili (escludendo weekend se necessario)
+        // Genera prossimi 30 giorni disponibili (escludendo SOLO domenica)
         for (let i = 1; i <= 30; i++) {
             const date = new Date(today);
             date.setDate(date.getDate() + i);
             
             const dayOfWeek = date.getDay(); // 0 = Domenica, 6 = Sabato
             
-            // Escludi weekend (opzionale - rimuovi questo if per includere weekend)
-            if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+            // Escludi SOLO domenica (0), sabato (6) è permesso
+            if (dayOfWeek !== 0) {
                 availableDates.push({
                     date: date.toISOString().split('T')[0],
                     formatted: date.toLocaleDateString('it-IT'),
@@ -489,11 +485,11 @@ app.post('/api/get-current-date', async (req, res) => {
             success: true,
             current_date: todayString,
             current_date_formatted: todayFormatted,
-            message: `Oggi è ${todayFormatted}. Gli appuntamenti possono essere fissati da domani in poi.`,
-            available_dates: availableDates.slice(0, 10), // Prime 10 date disponibili
+            message: `Oggi è ${todayFormatted}. Gli appuntamenti possono essere fissati da domani in poi (esclusa la domenica).`,
+            available_dates: availableDates.slice(0, 10),
             time_slots: [
                 '08:00-12:00',
-                '09:00-12:00', 
+                '09:00-12:00',
                 '13:00-17:00',
                 '14:00-17:00',
                 '14:00-18:00'
@@ -509,7 +505,7 @@ app.post('/api/get-current-date', async (req, res) => {
     }
 });
 
-// Funzione 6: Valida data proposta dal cliente
+// Funzione 6: Valida data proposta dal cliente (VERSIONE SEMPLIFICATA)
 app.post('/api/validate-appointment-date', async (req, res) => {
     try {
         const { proposed_date, time_slot } = req.body;
@@ -523,9 +519,8 @@ app.post('/api/validate-appointment-date', async (req, res) => {
         
         const today = new Date();
         const proposedDate = new Date(proposed_date);
-        const todayString = today.toISOString().split('T')[0];
         
-        // Verifica che la data non sia nel passato
+        // CONTROLLO 1: Verifica che la data non sia nel passato
         if (proposedDate <= today) {
             return res.json({
                 success: false,
@@ -536,53 +531,28 @@ app.post('/api/validate-appointment-date', async (req, res) => {
             });
         }
         
-        // Verifica che non sia weekend (opzionale)
+        // CONTROLLO 2: Verifica che non sia domenica
         const dayOfWeek = proposedDate.getDay();
-        if (dayOfWeek === 0 || dayOfWeek === 6) {
+        if (dayOfWeek === 0) { // Solo domenica (0), sabato (6) è permesso
             return res.json({
                 success: false,
                 is_valid: false,
-                reason: 'weekend',
-                message: 'Non effettuiamo interventi nei weekend. Le posso proporre il lunedì successivo o un altro giorno feriale.',
+                reason: 'sunday',
+                message: 'Non effettuiamo interventi di domenica. Le posso proporre il lunedì successivo o un altro giorno.',
                 suggested_dates: await getSuggestedDates()
             });
         }
         
-        // Verifica disponibilità slot
-        if (time_slot) {
-            const availabilityQuery = `
-                SELECT COUNT(*) as count 
-                FROM pianificazioni 
-                WHERE data_appuntamento = $1 
-                AND fascia_oraria = $2
-                AND stato != 'cancellato'
-            `;
-            
-            const availability = await pool.query(availabilityQuery, [proposed_date, time_slot]);
-            
-            if (parseInt(availability.rows[0].count) >= 5) {
-                return res.json({
-                    success: false,
-                    is_valid: false,
-                    reason: 'slot_full',
-                    message: `La fascia oraria ${time_slot} del ${proposedDate.toLocaleDateString('it-IT')} è già completa. Le propongo alternative disponibili.`,
-                    alternative_slots: [
-                        '08:00-12:00',
-                        '13:00-17:00',
-                        '14:00-18:00'
-                    ]
-                });
-            }
-        }
+        // RIMUOVO: Controllo disponibilità slot - non serve più
+        // La data è valida se non è nel passato e non è domenica
         
-        // Data valida
         res.json({
             success: true,
             is_valid: true,
             message: `Perfetto! La data ${proposedDate.toLocaleDateString('it-IT')} è disponibile.`,
             available_time_slots: [
                 '08:00-12:00',
-                '09:00-12:00', 
+                '09:00-12:00',
                 '13:00-17:00',
                 '14:00-17:00',
                 '14:00-18:00'
@@ -598,7 +568,11 @@ app.post('/api/validate-appointment-date', async (req, res) => {
     }
 });
 
-// Helper function per date suggerite
+// ===================================
+// ANCHE QUESTA HELPER FUNCTION VA AGGIORNATA
+// ===================================
+
+// Helper function per date suggerite (VERSIONE AGGIORNATA)
 async function getSuggestedDates() {
     const today = new Date();
     const suggested = [];
@@ -607,8 +581,8 @@ async function getSuggestedDates() {
         const date = new Date(today);
         date.setDate(date.getDate() + i);
         
-        // Escludi weekend
-        if (date.getDay() !== 0 && date.getDay() !== 6) {
+        // Escludi SOLO domenica (0), sabato (6) è permesso
+        if (date.getDay() !== 0) {
             suggested.push({
                 date: date.toISOString().split('T')[0],
                 formatted: date.toLocaleDateString('it-IT'),
@@ -619,6 +593,7 @@ async function getSuggestedDates() {
     
     return suggested.slice(0, 5); // Prime 5 date disponibili
 }
+
 
 // ===================================
 // ENDPOINT UTILITÀ
