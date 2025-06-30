@@ -707,6 +707,28 @@ app.post('/api/reschedule-appointment', async (req, res) => {
         
         const appointment = appointmentResult.rows[0];
         
+        // Verifica disponibilità
+        const availabilityQuery = `
+            SELECT COUNT(*) as count
+            FROM pianificazioni 
+            WHERE data_appuntamento = $1 
+            AND fascia_oraria = $2
+            AND stato != 'cancellato'
+        `;
+        
+        const availability = await pool.query(availabilityQuery, [new_date, new_time_slot]);
+        
+        if (parseInt(availability.rows[0].count) >= 5) {
+            return res.json({
+                success: false,
+                error: 'La fascia oraria richiesta è già piena. Le propongo alternative disponibili.',
+                alternatives: [
+                    { date: new_date, time: '08:00-12:00' },
+                    { date: new_date, time: '13:00-17:00' }
+                ]
+            });
+        }
+        
         // Aggiorna appuntamento
         const updateQuery = `
             UPDATE pianificazioni 
