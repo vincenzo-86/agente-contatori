@@ -322,6 +322,175 @@ app.post('/api/get-info', async (req, res) => {
 });
 
 // ===================================
+// NUOVA FUNZIONE: GET CURRENT DATE + VALIDATE DATES
+// ===================================
+
+// Funzione 5: Ottieni data corrente e valida disponibilità
+app.post('/api/get-current-date', async (req, res) => {
+    try {
+        const today = new Date();
+        const todayString = today.toISOString().split('T')[0]; // YYYY-MM-DD
+        const todayFormatted = today.toLocaleDateString('it-IT');
+        
+        // Calcola date disponibili (da domani in poi)
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        
+        const availableDates = [];
+        
+        // Genera prossimi 30 giorni disponibili (escludendo weekend se necessario)
+        for (let i = 1; i <= 30; i++) {
+            const date = new Date(today);
+            date.setDate(date.getDate() + i);
+            
+            const dayOfWeek = date.getDay(); // 0 = Domenica, 6 = Sabato
+            
+            // Escludi weekend (opzionale - rimuovi questo if per includere weekend)
+            if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+                availableDates.push({
+                    date: date.toISOString().split('T')[0],
+                    formatted: date.toLocaleDateString('it-IT'),
+                    dayName: date.toLocaleDateString('it-IT', { weekday: 'long' })
+                });
+            }
+        }
+
+        res.json({
+            success: true,
+            current_date: todayString,
+            current_date_formatted: todayFormatted,
+            message: `Oggi è ${todayFormatted}. Gli appuntamenti possono essere fissati da domani in poi.`,
+            available_dates: availableDates.slice(0, 10), // Prime 10 date disponibili
+            time_slots: [
+                '08:00-12:00',
+                '09:00-12:00', 
+                '13:00-17:00',
+                '14:00-17:00',
+                '14:00-18:00'
+            ]
+        });
+        
+    } catch (error) {
+        console.error('❌ Errore get current date:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Errore nel recupero data corrente'
+        });
+    }
+});
+
+// Funzione 6: Valida data proposta dal cliente
+app.post('/api/validate-appointment-date', async (req, res) => {
+    try {
+        const { proposed_date, time_slot } = req.body;
+        
+        if (!proposed_date) {
+            return res.status(400).json({
+                success: false,
+                error: 'Data proposta richiesta'
+            });
+        }
+        
+        const today = new Date();
+        const proposedDate = new Date(proposed_date);
+        const todayString = today.toISOString().split('T')[0];
+        
+        // Verifica che la data non sia nel passato
+        if (proposedDate <= today) {
+            return res.json({
+                success: false,
+                is_valid: false,
+                reason: 'past_date',
+                message: `Mi dispiace, non posso fissare appuntamenti nel passato. Oggi è ${today.toLocaleDateString('it-IT')}. Le posso proporre una data da domani in poi.`,
+                suggested_dates: await getSuggestedDates()
+            });
+        }
+        
+        // Verifica che non sia weekend (opzionale)
+        const dayOfWeek = proposedDate.getDay();
+        if (dayOfWeek === 0 || dayOfWeek === 6) {
+            return res.json({
+                success: false,
+                is_valid: false,
+                reason: 'weekend',
+                message: 'Non effettuiamo interventi nei weekend. Le posso proporre il lunedì successivo o un altro giorno feriale.',
+                suggested_dates: await getSuggestedDates()
+            });
+        }
+        
+        // Verifica disponibilità slot
+        if (time_slot) {
+            const availabilityQuery = `
+                SELECT COUNT(*) as count 
+                FROM pianificazioni 
+                WHERE data_appuntamento = $1 
+                AND fascia_oraria = $2
+                AND stato != 'cancellato'
+            `;
+            
+            const availability = await pool.query(availabilityQuery, [proposed_date, time_slot]);
+            
+            if (parseInt(availability.rows[0].count) >= 5) {
+                return res.json({
+                    success: false,
+                    is_valid: false,
+                    reason: 'slot_full',
+                    message: `La fascia oraria ${time_slot} del ${proposedDate.toLocaleDateString('it-IT')} è già completa. Le propongo alternative disponibili.`,
+                    alternative_slots: [
+                        '08:00-12:00',
+                        '13:00-17:00',
+                        '14:00-18:00'
+                    ]
+                });
+            }
+        }
+        
+        // Data valida
+        res.json({
+            success: true,
+            is_valid: true,
+            message: `Perfetto! La data ${proposedDate.toLocaleDateString('it-IT')} è disponibile.`,
+            available_time_slots: [
+                '08:00-12:00',
+                '09:00-12:00', 
+                '13:00-17:00',
+                '14:00-17:00',
+                '14:00-18:00'
+            ]
+        });
+        
+    } catch (error) {
+        console.error('❌ Errore validazione data:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Errore durante la validazione'
+        });
+    }
+});
+
+// Helper function per date suggerite
+async function getSuggestedDates() {
+    const today = new Date();
+    const suggested = [];
+    
+    for (let i = 1; i <= 7; i++) {
+        const date = new Date(today);
+        date.setDate(date.getDate() + i);
+        
+        // Escludi weekend
+        if (date.getDay() !== 0 && date.getDay() !== 6) {
+            suggested.push({
+                date: date.toISOString().split('T')[0],
+                formatted: date.toLocaleDateString('it-IT'),
+                day_name: date.toLocaleDateString('it-IT', { weekday: 'long' })
+            });
+        }
+    }
+    
+    return suggested.slice(0, 5); // Prime 5 date disponibili
+}
+
+// ===================================
 // ENDPOINT UTILITÀ
 // ===================================
 
