@@ -381,6 +381,231 @@ app.post('/api/test-appointment', async (req, res) => {
     }
 });
 
+// ===========================================
+// Funzione per inviare SMS tramite GatewayAPI
+// ===========================================
+async function sendSMSToOperator(operatorPhone, message) {
+    try {
+        const response = await fetch('https://gatewayapi.com/rest/mtsms', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.GATEWAYAPI_TOKEN}`
+            },
+            body: JSON.stringify({
+                sender: process.env.GATEWAYAPI_SENDER,
+                message: message,
+                recipients: [{ msisdn: operatorPhone }]
+            })
+        });
+
+        const result = await response.json();
+        console.log('📱 SMS inviato:', result);
+        return result;
+    } catch (error) {
+        console.error('❌ Errore invio SMS:', error);
+        return null;
+    }
+}
+
+// Modifica la funzione reschedule per includere SMS
+app.post('/api/reschedule-appointment', async (req, res) => {
+    try {
+        console.log('📅 Riprogrammazione appuntamento:', req.body);
+        const { appointment_id, matricola, new_date, new_time_slot, reason } = req.body;
+        
+        // Trova l'appuntamento e l'operatore
+        const appointmentQuery = `
+            SELECT p.*, o.nome, o.cognome, o.telefono as operatore_telefono
+            FROM pianificazioni p
+            LEFT JOIN operatori o ON p.operatore_id = o.id
+            WHERE p.id = $1 OR p.matricola = $2
+        `;
+        
+        const appointmentResult = await pool.query(appointmentQuery, [appointment_id, matricola]);
+        
+        if (appointmentResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Appuntamento non trovato'
+            });
+        }
+        
+        const appointment = appointmentResult.rows[0];
+        
+        // Verifica disponibilità
+        const availabilityQuery = `
+            SELECT COUNT(*) as count 
+            FROM pianificazioni 
+            WHERE data_appuntamento = $1 
+            AND fascia_oraria = $2
+            AND stato != 'cancellato'
+        `;
+        
+        const availability = await pool.query(availabilityQuery, [new_date, new_time_slot]);
+        
+        if (parseInt(availability.rows[0].count) >= 5) {
+            return res.json({
+                success: false,
+                error: 'La fascia oraria richiesta è già piena. Le propongo alternative disponibili.',
+                alternatives: [
+                    { date: new_date, time: '08:00-12:00' },
+                    { date: new_date, time: '13:00-17:00' }
+                ]
+            });
+        }
+        
+        // Aggiorna appuntamento
+        const updateQuery = `
+            UPDATE pianificazioni 
+            SET data_appuntamento = $1,
+                fascia_oraria = $2,
+                stato = 'riprogrammato',
+                note_riprogrammazione = $3,
+                data_modifica = CURRENT_TIMESTAMP
+            WHERE id = $4 OR matricola = $5
+            RETURNING *
+        `;
+        
+        await pool.query(`
+            ALTER TABLE pianificazioni 
+            ADD COLUMN IF NOT EXISTS note_riprogrammazione TEXT,
+            ADD COLUMN IF NOT EXISTS data_modifica TIMESTAMP
+        `).catch(() => {});
+        
+        const result = await pool.query(updateQuery, [
+            new_date, 
+            new_time_slot, 
+            reason || 'Riprogrammato su richiesta cliente',
+            appointment_id,
+            matricola
+        ]);
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Appuntamento non trovato'
+            });
+        }
+        
+        // Invia SMS all'operatore se ha il telefono
+        if (appointment.operatore_telefono) {
+            const newDateFormatted = new Date(new_date).toLocaleDateString('it-IT');
+            const smsMessage = `🔄 APPUNTAMENTO MODIFICATO
+Cliente: ${appointment.nome_utente}
+Indirizzo: ${appointment.indirizzo}, ${appointment.comune}
+Matricola: ${appointment.matricola}
+NUOVO APPUNTAMENTO: ${newDateFormatted} ore ${new_time_slot}
+Motivo: ${reason || 'Richiesta cliente'}`;
+
+            await sendSMSToOperator(appointment.operatore_telefono, smsMessage);
+        }
+        
+        // Log della modifica
+        await pool.query(`
+            INSERT INTO call_logs (matricola, action_taken, details, timestamp)
+            VALUES ($1, 'riprogrammazione', $2, CURRENT_TIMESTAMP)
+        `, [matricola, `Spostato a ${new_date} ${new_time_slot} - SMS inviato`]).catch(() => {});
+        
+        const newDateFormatted = new Date(new_date).toLocaleDateString('it-IT');
+        
+        res.json({
+            success: true,
+            message: `Perfetto! Ho spostato il suo appuntamento al ${newDateFormatted} nella fascia oraria ${new_time_slot}. Riceverà una nuova comunicazione con i dettagli aggiornati e il nostro operatore è stato notificato della modifica. Desidera altro?`
+        });
+        
+    } catch (error) {
+        console.error('❌ Errore riprogrammazione:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Errore durante la riprogrammazione. Riprovi tra poco.'
+        });
+    }
+});
+
+// Nuova funzione per conferma appuntamento con SMS
+app.post('/api/confirm-appointment', async (req, res) => {
+    try {
+        console.log('✅ Conferma appuntamento:', req.body);
+        const { appointment_id, matricola } = req.body;
+        
+        // Trova l'appuntamento e l'operatore
+        const appointmentQuery = `
+            SELECT p.*, o.nome, o.cognome, o.telefono as operatore_telefono
+            FROM pianificazioni p
+            LEFT JOIN operatori o ON p.operatore_id = o.id
+            WHERE p.id = $1 OR p.matricola = $2
+        `;
+        
+        const appointmentResult = await pool.query(appointmentQuery, [appointment_id, matricola]);
+        
+        if (appointmentResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Appuntamento non trovato'
+            });
+        }
+        
+        const appointment = appointmentResult.rows[0];
+        
+        // Aggiungi campo stato se non esiste
+        await pool.query(`
+            ALTER TABLE pianificazioni 
+            ADD COLUMN IF NOT EXISTS stato VARCHAR(50) DEFAULT 'programmato'
+        `).catch(() => {});
+        
+        const updateQuery = `
+            UPDATE pianificazioni 
+            SET stato = 'confermato',
+                data_conferma = CURRENT_TIMESTAMP
+            WHERE id = $1 OR matricola = $2
+            RETURNING *
+        `;
+        
+        const result = await pool.query(updateQuery, [appointment_id, matricola]);
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Appuntamento non trovato'
+            });
+        }
+        
+        // Invia SMS di conferma all'operatore se ha il telefono
+        if (appointment.operatore_telefono) {
+            const dataFormatted = new Date(appointment.data_appuntamento).toLocaleDateString('it-IT');
+            const smsMessage = `✅ APPUNTAMENTO CONFERMATO
+Cliente: ${appointment.nome_utente}
+Indirizzo: ${appointment.indirizzo}, ${appointment.comune}
+Matricola: ${appointment.matricola}
+Data: ${dataFormatted} ore ${appointment.fascia_oraria}
+Il cliente ha confermato telefonicamente.`;
+
+            await sendSMSToOperator(appointment.operatore_telefono, smsMessage);
+        }
+        
+        // Log della conferma
+        await pool.query(`
+            INSERT INTO call_logs (matricola, action_taken, details, timestamp)
+            VALUES ($1, 'conferma', 'Appuntamento confermato telefonicamente - SMS inviato', CURRENT_TIMESTAMP)
+        `, [matricola]).catch(() => {});
+        
+        const dataFormatted = new Date(appointment.data_appuntamento).toLocaleDateString('it-IT');
+        
+        res.json({
+            success: true,
+            message: `Perfetto! Il suo appuntamento per ${dataFormatted} nella fascia oraria ${appointment.fascia_oraria} è stato confermato. Il nostro operatore è stato notificato e si presenterà nell'orario concordato. Ha altre domande?`
+        });
+        
+    } catch (error) {
+        console.error('❌ Errore conferma appuntamento:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Errore durante la conferma. Riprovi tra poco.'
+        });
+    }
+});
+
 // ===================================
 // KEEP-ALIVE per hosting gratuito
 // ===================================
