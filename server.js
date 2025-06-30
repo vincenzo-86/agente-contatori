@@ -176,11 +176,78 @@ app.post('/api/search-appointment', async (req, res) => {
     }
 });
 
-// Funzione 2: Conferma appuntamento
+// ===================================
+// AGGIUNGI QUESTE FUNZIONI AL TUO SERVER.JS ESISTENTE
+// ===================================
+
+// Funzione per cercare telefono operatore tramite nome completo
+async function getOperatorPhone(operatorFullName) {
+    try {
+        if (!operatorFullName) return null;
+        
+        // Split "Nome Cognome" in parti separate
+        const nameParts = operatorFullName.trim().split(' ');
+        
+        if (nameParts.length < 2) {
+            console.log('⚠️ Formato operatore non valido:', operatorFullName);
+            return null;
+        }
+        
+        const nome = nameParts[0];
+        const cognome = nameParts.slice(1).join(' '); // Per gestire cognomi composti
+        
+        console.log(`🔍 Ricerca operatore: nome="${nome}", cognome="${cognome}"`);
+        
+        // Query per trovare l'operatore
+        const operatorQuery = `
+            SELECT telefono, nome, cognome
+            FROM operatori 
+            WHERE LOWER(nome) = LOWER($1) 
+            AND LOWER(cognome) = LOWER($2)
+            LIMIT 1
+        `;
+        
+        const result = await pool.query(operatorQuery, [nome, cognome]);
+        
+        if (result.rows.length > 0) {
+            const operator = result.rows[0];
+            console.log(`✅ Operatore trovato: ${operator.nome} ${operator.cognome}, tel: ${operator.telefono}`);
+            return operator.telefono;
+        } else {
+            console.log(`❌ Operatore non trovato: ${nome} ${cognome}`);
+            return null;
+        }
+        
+    } catch (error) {
+        console.error('❌ Errore ricerca operatore:', error);
+        return null;
+    }
+}
+
 app.post('/api/confirm-appointment', async (req, res) => {
     try {
         console.log('✅ Conferma appuntamento:', req.body);
         const { appointment_id, matricola } = req.body;
+        
+        // QUERY MODIFICATA: leggi operatore_id come nome completo
+        const appointmentQuery = `
+            SELECT 
+                p.*,
+                p.operatore_id as operatore_nome_completo
+            FROM pianificazioni p
+            WHERE p.id = $1 OR p.matricola = $2
+        `;
+        
+        const appointmentResult = await pool.query(appointmentQuery, [appointment_id, matricola]);
+        
+        if (appointmentResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Appuntamento non trovato'
+            });
+        }
+        
+        const appointment = appointmentResult.rows[0];
         
         // Aggiungi campo stato se non esiste
         try {
@@ -208,12 +275,32 @@ app.post('/api/confirm-appointment', async (req, res) => {
             });
         }
         
-        const appointment = result.rows[0];
+        // NUOVO: Cerca telefono operatore e invia SMS
+        let smsStatus = 'nessun operatore';
+        if (appointment.operatore_nome_completo) {
+            const operatorPhone = await getOperatorPhone(appointment.operatore_nome_completo);
+            
+            if (operatorPhone) {
+                const dataFormatted = new Date(appointment.data_appuntamento).toLocaleDateString('it-IT');
+                const smsMessage = `✅ APPUNTAMENTO CONFERMATO
+Cliente: ${appointment.nome_utente}
+Indirizzo: ${appointment.indirizzo}, ${appointment.comune}
+Matricola: ${appointment.matricola}
+Data: ${dataFormatted} ore ${appointment.fascia_oraria}
+Il cliente ha confermato telefonicamente.`;
+
+                const smsResult = await sendSMSToOperator(operatorPhone, smsMessage);
+                smsStatus = smsResult ? 'SMS inviato' : 'SMS fallito';
+            } else {
+                smsStatus = 'operatore non trovato';
+            }
+        }
+        
         const dataFormatted = new Date(appointment.data_appuntamento).toLocaleDateString('it-IT');
         
         res.json({
             success: true,
-            message: `Perfetto! Il suo appuntamento per ${dataFormatted} nella fascia oraria ${appointment.fascia_oraria} è stato confermato. Riceverà un SMS di conferma. I nostri tecnici si presenteranno nell'orario concordato. Ha altre domande?`
+            message: `Perfetto! Il suo appuntamento per ${dataFormatted} nella fascia oraria ${appointment.fascia_oraria} è stato confermato. ${smsStatus === 'SMS inviato' ? 'Il nostro operatore è stato notificato e' : ''} I nostri tecnici si presenteranno nell'orario concordato. Ha altre domande?`
         });
         
     } catch (error) {
@@ -225,13 +312,33 @@ app.post('/api/confirm-appointment', async (req, res) => {
     }
 });
 
-// Funzione 3: Riprogramma appuntamento
+// SOSTITUISCI la tua funzione reschedule-appointment con questa:
 app.post('/api/reschedule-appointment', async (req, res) => {
     try {
         console.log('📅 Riprogrammazione appuntamento:', req.body);
         const { appointment_id, matricola, new_date, new_time_slot, reason } = req.body;
         
-        // Verifica disponibilità (semplificata)
+        // QUERY MODIFICATA: leggi operatore_id come nome completo
+        const appointmentQuery = `
+            SELECT 
+                p.*,
+                p.operatore_id as operatore_nome_completo
+            FROM pianificazioni p
+            WHERE p.id = $1 OR p.matricola = $2
+        `;
+        
+        const appointmentResult = await pool.query(appointmentQuery, [appointment_id, matricola]);
+        
+        if (appointmentResult.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Appuntamento non trovato'
+            });
+        }
+        
+        const appointment = appointmentResult.rows[0];
+        
+        // Verifica disponibilità (come prima)
         const availabilityQuery = `
             SELECT COUNT(*) as count 
             FROM pianificazioni 
@@ -241,7 +348,7 @@ app.post('/api/reschedule-appointment', async (req, res) => {
         
         const availability = await pool.query(availabilityQuery, [new_date, new_time_slot]);
         
-        if (parseInt(availability.rows[0].count) >= 5) { // Max 5 appuntamenti per slot
+        if (parseInt(availability.rows[0].count) >= 5) {
             return res.json({
                 success: false,
                 error: 'La fascia oraria richiesta è già piena. Le propongo alternative disponibili.',
@@ -252,7 +359,7 @@ app.post('/api/reschedule-appointment', async (req, res) => {
             });
         }
         
-        // Aggiorna appuntamento
+        // Aggiorna appuntamento (come prima)
         const updateQuery = `
             UPDATE pianificazioni 
             SET data_appuntamento = $1,
@@ -263,8 +370,8 @@ app.post('/api/reschedule-appointment', async (req, res) => {
         `;
         
         const result = await pool.query(updateQuery, [
-            new_date, 
-            new_time_slot, 
+            new_date,
+            new_time_slot,
             appointment_id,
             matricola
         ]);
@@ -276,11 +383,34 @@ app.post('/api/reschedule-appointment', async (req, res) => {
             });
         }
         
+        // NUOVO: Cerca telefono operatore e invia SMS
+        let smsStatus = 'nessun operatore';
+        if (appointment.operatore_nome_completo) {
+            const operatorPhone = await getOperatorPhone(appointment.operatore_nome_completo);
+            
+            if (operatorPhone) {
+                const oldDateFormatted = new Date(appointment.data_appuntamento).toLocaleDateString('it-IT');
+                const newDateFormatted = new Date(new_date).toLocaleDateString('it-IT');
+                const smsMessage = `🔄 APPUNTAMENTO MODIFICATO
+Cliente: ${appointment.nome_utente}
+Indirizzo: ${appointment.indirizzo}, ${appointment.comune}
+Matricola: ${appointment.matricola}
+VECCHIO: ${oldDateFormatted} ore ${appointment.fascia_oraria}
+NUOVO: ${newDateFormatted} ore ${new_time_slot}
+Motivo: ${reason || 'Richiesta cliente'}`;
+
+                const smsResult = await sendSMSToOperator(operatorPhone, smsMessage);
+                smsStatus = smsResult ? 'SMS inviato' : 'SMS fallito';
+            } else {
+                smsStatus = 'operatore non trovato';
+            }
+        }
+        
         const newDateFormatted = new Date(new_date).toLocaleDateString('it-IT');
         
         res.json({
             success: true,
-            message: `Perfetto! Ho spostato il suo appuntamento al ${newDateFormatted} nella fascia oraria ${new_time_slot}. Riceverà una nuova comunicazione con i dettagli aggiornati. L'appuntamento precedente è stato cancellato. Desidera altro?`
+            message: `Perfetto! Ho spostato il suo appuntamento al ${newDateFormatted} nella fascia oraria ${new_time_slot}. Riceverà una nuova comunicazione con i dettagli aggiornati. ${smsStatus === 'SMS inviato' ? 'Il nostro operatore è stato notificato della modifica.' : ''} Desidera altro?`
         });
         
     } catch (error) {
